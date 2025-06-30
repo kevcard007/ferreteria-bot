@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: ferreteria-dashboard
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: streamlit run dashboard.py --server.port=$PORT --server.address=0.0.0.0
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+
+  - type: worker
+    name: ferreteria-bot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python ferreteria_bot.py
