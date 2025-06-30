@@ -1,0 +1,5 @@
+.env
+ferreteria.db
+__pycache__/
+*.pyc
+.vscode/
