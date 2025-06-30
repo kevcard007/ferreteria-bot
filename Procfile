@@ -1,0 +1,1 @@
+worker: python ferreteria_bot.py
