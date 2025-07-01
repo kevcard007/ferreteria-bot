@@ -3,7 +3,6 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
-import sqlite3
 import os
 
 # Configurar la página
@@ -22,33 +21,30 @@ if os.getenv('RENDER'):
     </style>
     """, unsafe_allow_html=True)
 
-# Función para conectar a SQLite
+# Función para conectar a la base de datos
 @st.cache_resource
-def get_database_path():
-    # En producción (Render), buscar en diferentes ubicaciones
-    possible_paths = [
-        'ferreteria.db',
-        '/tmp/ferreteria.db',
-        './ferreteria.db'
-    ]
+def init_database():
+    """Inicializa conexión a la base de datos (PostgreSQL o SQLite)"""
+    DATABASE_URL = os.getenv('DATABASE_URL')
     
-    for path in possible_paths:
-        if os.path.exists(path):
-            return path
-    
-    # Si no existe, crear una nueva
-    return 'ferreteria.db'
-
-# Función para obtener datos con cache
-@st.cache_data(ttl=30)  # Cache por 30 segundos
-def obtener_todos_los_datos():
-    """Obtiene todos los productos de la base de datos SQLite"""
-    try:
-        db_path = get_database_path()
-        
+    if DATABASE_URL and 'postgresql' in DATABASE_URL:
+        # Usar PostgreSQL
+        try:
+            import psycopg2
+            conn = psycopg2.connect(DATABASE_URL)
+            conn.close()  # Test de conexión
+            return 'postgresql', DATABASE_URL
+        except Exception as e:
+            st.error(f"Error conectando a PostgreSQL: {e}")
+            return 'sqlite', 'ferreteria.db'
+    else:
+        # Usar SQLite como fallback
+        import sqlite3
+        db_path = 'ferreteria.db'
         # Crear tabla si no existe
-        with sqlite3.connect(db_path) as conn:
-            conn.execute('''
+        try:
+            conn = sqlite3.connect(db_path)
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS productos (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     precio REAL NOT NULL,
@@ -59,16 +55,44 @@ def obtener_todos_los_datos():
                     usuario_telegram INTEGER NOT NULL,
                     usuario_nombre TEXT
                 )
-            ''')
+            """)
             conn.commit()
+            conn.close()
+        except Exception as e:
+            st.error(f"Error inicializando SQLite: {e}")
         
-        # Obtener datos
-        query = """
-        SELECT id, precio, categoria, codigo, descripcion, fecha_hora, usuario_telegram, usuario_nombre
-        FROM productos 
-        ORDER BY fecha_hora DESC
-        """
-        df = pd.read_sql_query(query, sqlite3.connect(db_path))
+        return 'sqlite', db_path
+
+# Obtener configuración de BD
+db_type, db_connection = init_database()
+
+# Función para obtener datos con cache
+@st.cache_data(ttl=30)  # Cache por 30 segundos
+def obtener_todos_los_datos():
+    """Obtiene todos los productos de la base de datos"""
+    try:
+        if db_type == 'postgresql':
+            # PostgreSQL
+            import psycopg2
+            conn = psycopg2.connect(db_connection)
+            query = """
+            SELECT id, precio, categoria, codigo, descripcion, fecha_hora, usuario_telegram, usuario_nombre
+            FROM productos 
+            ORDER BY fecha_hora DESC
+            """
+            df = pd.read_sql_query(query, conn)
+            conn.close()
+        else:
+            # SQLite
+            import sqlite3
+            conn = sqlite3.connect(db_connection)
+            query = """
+            SELECT id, precio, categoria, codigo, descripcion, fecha_hora, usuario_telegram, usuario_nombre
+            FROM productos 
+            ORDER BY fecha_hora DESC
+            """
+            df = pd.read_sql_query(query, conn)
+            conn.close()
         
         if not df.empty:
             df['fecha_hora'] = pd.to_datetime(df['fecha_hora'])
@@ -77,7 +101,7 @@ def obtener_todos_los_datos():
         
         return df
     except Exception as e:
-        st.error(f"Error obteniendo datos: {e}")
+        st.error(f"Error obteniendo datos de {db_type}: {e}")
         return pd.DataFrame()
 
 # Función para filtrar datos por fechas
@@ -90,28 +114,49 @@ def filtrar_por_fechas(df, dias_atras):
 
 # Título principal
 st.title("🔧 Dashboard Ferretería")
-st.markdown("📊 **Datos en tiempo real desde SQLite**")
+st.markdown(f"📊 **Datos en tiempo real desde {db_type.upper()}**")
+
+# Mostrar estado de conexión
+if db_type == 'postgresql':
+    st.success("✅ Conectado a PostgreSQL de Railway - Datos sincronizados con el bot")
+else:
+    st.warning("⚠️ Usando SQLite local - Para ver datos del bot, configura DATABASE_URL")
+
 st.markdown("---")
 
 # Obtener datos
 df = obtener_todos_los_datos()
 
 if df.empty:
-    st.warning("📭 No hay datos disponibles. Registra algunos productos usando el bot de Telegram.")
+    st.warning("📭 No hay datos disponibles.")
     
-    # Mostrar información sobre cómo usar el bot
-    st.info("""
-    **¿Cómo agregar datos?**
-    
-    1. Ve a tu bot de Telegram
-    2. Envía una foto de una etiqueta de producto
-    3. El bot analizará y guardará la información
-    4. Los datos aparecerán aquí automáticamente
-    """)
+    if db_type == 'postgresql':
+        st.info("""
+        **PostgreSQL conectado pero sin datos:**
+        
+        1. Verifica que el bot esté funcionando en Railway
+        2. Envía una foto al bot para crear el primer registro
+        3. Los datos aparecerán aquí automáticamente
+        """)
+    else:
+        st.info("""
+        **Para ver los datos del bot:**
+        
+        1. Configura la variable DATABASE_URL en Render
+        2. Usa la misma URL de PostgreSQL que el bot en Railway
+        3. Redespliega el dashboard
+        """)
     st.stop()
 
 # Sidebar para filtros
 st.sidebar.header("📅 Filtros")
+
+# Mostrar información de la BD
+st.sidebar.info(f"🔗 **Base de datos**: {db_type.upper()}")
+if db_type == 'postgresql':
+    st.sidebar.success("✅ Sincronizado con el bot")
+else:
+    st.sidebar.warning("⚠️ No sincronizado")
 
 # Selector de período
 periodo = st.sidebar.selectbox(
@@ -327,16 +372,16 @@ st.markdown("**🔧 Información del Sistema:**")
 col1, col2, col3 = st.columns(3)
 
 with col1:
-    st.info("📊 **Base de datos**: SQLite")
+    st.info(f"📊 **Base de datos**: {db_type.upper()}")
 
 with col2:
-    db_path = get_database_path()
-    st.info(f"📁 **Archivo**: {db_path}")
+    if db_type == 'postgresql':
+        st.success("🔗 **Estado**: Sincronizado")
+    else:
+        st.warning("⚠️ **Estado**: Local")
 
 with col3:
-    if os.path.exists(db_path):
-        size = os.path.getsize(db_path) / 1024  # KB
-        st.info(f"💾 **Tamaño**: {size:.1f} KB")
+    st.info(f"📈 **Registros**: {len(df)}")
 
 # Botón para refrescar datos
 st.markdown("---")
@@ -348,9 +393,10 @@ with col2:
 
 # Footer
 st.markdown("---")
+status_text = "sincronizado con el bot" if db_type == 'postgresql' else "datos locales"
 st.markdown(
-    "<div style='text-align: center; color: #666;'>"
-    "🔧 Dashboard Ferretería | Datos desde SQLite | Actualizados automáticamente"
+    f"<div style='text-align: center; color: #666;'>"
+    f"🔧 Dashboard Ferretería | {db_type.upper()} | {status_text}"
     "</div>", 
     unsafe_allow_html=True
 )
