@@ -7,8 +7,134 @@ import google.generativeai as genai
 from PIL import Image
 import io
 
-# Importar nuestro módulo de base de datos
-from database import FerreteriaDB, extraer_precio_de_texto, normalizar_categoria
+# Importar nuestro módulo de base de datos con fallback
+try:
+    from database import FerreteriaDB, extraer_precio_de_texto, normalizar_categoria
+    # Intentar conectar a PostgreSQL
+    db = FerreteriaDB()
+    USING_POSTGRES = True
+    print("✅ Usando PostgreSQL")
+except Exception as e:
+    print(f"⚠️ PostgreSQL no disponible, usando SQLite: {e}")
+    USING_POSTGRES = False
+    # Fallback a SQLite simple
+    import sqlite3
+    
+    def init_sqlite():
+        conn = sqlite3.connect('ferreteria.db')
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS productos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                precio REAL NOT NULL,
+                categoria TEXT NOT NULL,
+                codigo TEXT,
+                descripcion TEXT NOT NULL,
+                fecha_hora TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                usuario_telegram INTEGER NOT NULL,
+                usuario_nombre TEXT
+            )
+        ''')
+        conn.commit()
+        conn.close()
+        print("✅ SQLite inicializado correctamente")
+    
+    init_sqlite()
+    
+    # Funciones SQLite de fallback
+    def extraer_precio_de_texto(texto):
+        import re
+        patrones = [
+            r'\$\s*(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)',
+            r'(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)\s*\$',
+            r'(\d+(?:\.\d{2})?)'
+        ]
+        for patron in patrones:
+            match = re.search(patron, texto)
+            if match:
+                precio_str = match.group(1).replace(',', '')
+                try:
+                    return float(precio_str)
+                except ValueError:
+                    continue
+        return None
+    
+    def normalizar_categoria(texto):
+        texto_lower = texto.lower()
+        if 'verde' in texto_lower or 'agricultura' in texto_lower:
+            return 'Verde-Agricultura'
+        elif 'rojo' in texto_lower or 'construcción' in texto_lower or 'construccion' in texto_lower:
+            return 'Rojo-Construcción'
+        elif 'amarillo' in texto_lower or 'pintura' in texto_lower:
+            return 'Amarillo-Pintura'
+        else:
+            return 'Sin categoría'
+    
+    def insertar_producto_sqlite(precio, categoria, codigo, descripcion, usuario_telegram, usuario_nombre):
+        try:
+            conn = sqlite3.connect('ferreteria.db')
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO productos (precio, categoria, codigo, descripcion, usuario_telegram, usuario_nombre)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (precio, categoria, codigo, descripcion, usuario_telegram, usuario_nombre))
+            conn.commit()
+            producto_id = cursor.lastrowid
+            conn.close()
+            print(f"✅ Producto insertado en SQLite con ID: {producto_id}")
+            return True
+        except Exception as e:
+            print(f"❌ Error insertando en SQLite: {e}")
+            return False
+    
+    def obtener_estadisticas_sqlite():
+        try:
+            conn = sqlite3.connect('ferreteria.db')
+            cursor = conn.cursor()
+            
+            # Total del día
+            cursor.execute("""
+                SELECT COUNT(*), COALESCE(SUM(precio), 0) 
+                FROM productos 
+                WHERE DATE(fecha_hora) = DATE('now')
+            """)
+            count, total = cursor.fetchone()
+            
+            # Por categorías del día
+            cursor.execute("""
+                SELECT categoria, COUNT(*), SUM(precio) 
+                FROM productos 
+                WHERE DATE(fecha_hora) = DATE('now')
+                GROUP BY categoria
+            """)
+            categorias = cursor.fetchall()
+            
+            # Últimos productos
+            cursor.execute("""
+                SELECT descripcion, precio, fecha_hora 
+                FROM productos 
+                WHERE DATE(fecha_hora) = DATE('now')
+                ORDER BY fecha_hora DESC 
+                LIMIT 3
+            """)
+            ultimos = cursor.fetchall()
+            
+            conn.close()
+            
+            return {
+                'total_productos': count or 0,
+                'total_ventas': total or 0.0,
+                'categorias': categorias or [],
+                'ultimos': ultimos or []
+            }
+        except Exception as e:
+            print(f"❌ Error obteniendo estadísticas SQLite: {e}")
+            return {
+                'total_productos': 0,
+                'total_ventas': 0.0,
+                'categorias': [],
+                'ultimos': []
+            }
 
 # Cargar variables de entorno desde el archivo .env
 load_dotenv()
@@ -24,18 +150,22 @@ logger = logging.getLogger(__name__)
 genai.configure(api_key=os.getenv('GOOGLE_API_KEY'))
 model = genai.GenerativeModel('gemini-1.5-flash')
 
-# Inicializar base de datos
-db = FerreteriaDB()
+# Mensaje de inicio
+if USING_POSTGRES:
+    print("📊 Usando PostgreSQL como base de datos")
+else:
+    print("📀 Usando SQLite como base de datos")
 
 # Función que se ejecuta cuando alguien escribe /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Mensaje de bienvenida cuando inician el bot"""
-    welcome_message = """
+    db_type = "PostgreSQL" if USING_POSTGRES else "SQLite"
+    welcome_message = f"""
 🔧 ¡Bienvenido al Bot de Ferretería! 🔧
 
 Envíame una foto de la etiqueta de tu producto y yo:
 • Extraeré precio, categoría, código y descripción
-• Guardaré el registro en la base de datos
+• Guardaré el registro en la base de datos ({db_type})
 • Te daré un resumen del análisis
 
 **Categorías que reconozco:**
@@ -119,16 +249,22 @@ Sé muy preciso con los números y textos."""
         # Guardar en base de datos solo si tenemos precio válido
         guardado_exitoso = False
         if precio and precio > 0:
-            guardado_exitoso = db.insertar_producto(
-                precio=precio,
-                categoria=categoria,
-                codigo=codigo,
-                descripcion=descripcion,
-                usuario_telegram=user_id,
-                usuario_nombre=user_name
-            )
+            if USING_POSTGRES:
+                guardado_exitoso = db.insertar_producto(
+                    precio=precio,
+                    categoria=categoria,
+                    codigo=codigo,
+                    descripcion=descripcion,
+                    usuario_telegram=user_id,
+                    usuario_nombre=user_name
+                )
+            else:
+                guardado_exitoso = insertar_producto_sqlite(
+                    precio, categoria, codigo, descripcion, user_id, user_name
+                )
         
         # Preparar respuesta para el usuario
+        db_type = "PostgreSQL" if USING_POSTGRES else "SQLite"
         if guardado_exitoso:
             respuesta = f"""✅ **Producto registrado exitosamente**
 
@@ -139,7 +275,7 @@ Sé muy preciso con los números y textos."""
 📝 Descripción: {descripcion}
 👤 Registrado por: {user_name}
 
-💾 **Estado**: Guardado en base de datos"""
+💾 **Estado**: Guardado en base de datos ({db_type})"""
         else:
             respuesta = f"""⚠️ **Análisis completado (no guardado)**
 
@@ -152,7 +288,7 @@ Sé muy preciso con los números y textos."""
         await update.message.reply_text(respuesta)
         
         # Log para debugging
-        logger.info(f"Análisis para usuario {user_id}: precio={precio}, categoria={categoria}")
+        logger.info(f"Análisis para usuario {user_id}: precio={precio}, categoria={categoria}, db={db_type}")
         
     except Exception as e:
         logger.error(f"Error procesando foto: {e}")
@@ -165,16 +301,29 @@ Sé muy preciso con los números y textos."""
 async def estadisticas_hoy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Muestra las estadísticas de ventas del día actual"""
     try:
-        # Obtener datos del día
-        total_ventas = db.obtener_total_ventas_hoy()
-        productos_por_categoria = db.obtener_productos_por_categoria()
-        ventas_hoy = db.obtener_ventas_hoy()
+        db_type = "PostgreSQL" if USING_POSTGRES else "SQLite"
+        
+        if USING_POSTGRES:
+            # Usar PostgreSQL
+            total_ventas = db.obtener_total_ventas_hoy()
+            productos_por_categoria = db.obtener_productos_por_categoria()
+            ventas_hoy = db.obtener_ventas_hoy()
+            total_productos = len(ventas_hoy)
+        else:
+            # Usar SQLite
+            stats = obtener_estadisticas_sqlite()
+            total_ventas = stats['total_ventas']
+            total_productos = stats['total_productos']
+            productos_por_categoria = {}
+            for cat, count, total in stats['categorias']:
+                productos_por_categoria[cat] = {"cantidad": count, "total": total}
+            ventas_hoy = stats['ultimos']
         
         # Preparar mensaje
-        mensaje = f"""📊 **Estadísticas del día**
+        mensaje = f"""📊 **Estadísticas del día** ({db_type})
 
 💰 **Total vendido hoy**: ${total_ventas:,.2f}
-📦 **Productos registrados**: {len(ventas_hoy)}
+📦 **Productos registrados**: {total_productos}
 
 📂 **Por categoría:**"""
         
@@ -184,11 +333,15 @@ async def estadisticas_hoy(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         else:
             mensaje += "\n• No hay registros del día"
         
-        # Últimos 3 productos registrados
+        # Últimos productos registrados
         if ventas_hoy:
             mensaje += "\n\n🕒 **Últimos registros:**"
             for i, producto in enumerate(ventas_hoy[:3]):  # Solo los primeros 3
-                id_prod, precio, categoria, codigo, descripcion, fecha_hora, user_id, user_name = producto
+                if USING_POSTGRES:
+                    descripcion = producto.get('descripcion', 'Sin descripción')
+                    precio = producto.get('precio', 0)
+                else:
+                    descripcion, precio, fecha = producto
                 mensaje += f"\n• {descripcion} - ${precio:,.2f}"
         
         await update.message.reply_text(mensaje)
@@ -209,13 +362,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 # Función para mostrar ayuda
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Muestra información de ayuda"""
-    help_text = """
+    db_type = "PostgreSQL" if USING_POSTGRES else "SQLite"
+    help_text = f"""
 🆘 **Ayuda - Bot de Ferretería**
 
 **📸 ¿Cómo registrar productos?**
 1. Envía una foto clara de la etiqueta
 2. El bot analizará automáticamente la información
-3. Si detecta un precio válido, se guardará en la base de datos
+3. Si detecta un precio válido, se guardará en la base de datos ({db_type})
 
 **📊 Comandos disponibles:**
 /start - Mensaje de bienvenida
@@ -262,8 +416,9 @@ def main() -> None:
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     
     # Iniciar el bot
+    db_info = "PostgreSQL" if USING_POSTGRES else "SQLite (ferreteria.db)"
     print("🤖 Bot iniciando con Google Gemini y Base de Datos...")
-    print("📊 Base de datos: ferreteria.db")
+    print(f"📊 Base de datos: {db_info}")
     print("✅ Bot activo. Presiona Ctrl+C para detener.")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
