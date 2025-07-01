@@ -4,7 +4,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import sqlite3
-from database import FerreteriaDB
+import os
 
 # Configurar la página
 st.set_page_config(
@@ -15,38 +15,67 @@ st.set_page_config(
 )
 
 # Configuración para producción
-import os
 if os.getenv('RENDER'):
-    # Configuraciones específicas para Render
     st.markdown("""
     <style>
     .stApp > header {visibility: hidden;}
     </style>
     """, unsafe_allow_html=True)
 
-# Conectar a la base de datos
+# Función para conectar a SQLite
 @st.cache_resource
-def init_database():
-    return FerreteriaDB()
-
-db = init_database()
+def get_database_path():
+    # En producción (Render), buscar en diferentes ubicaciones
+    possible_paths = [
+        'ferreteria.db',
+        '/tmp/ferreteria.db',
+        './ferreteria.db'
+    ]
+    
+    for path in possible_paths:
+        if os.path.exists(path):
+            return path
+    
+    # Si no existe, crear una nueva
+    return 'ferreteria.db'
 
 # Función para obtener datos con cache
 @st.cache_data(ttl=30)  # Cache por 30 segundos
 def obtener_todos_los_datos():
-    """Obtiene todos los productos de la base de datos"""
+    """Obtiene todos los productos de la base de datos SQLite"""
     try:
-        with sqlite3.connect(db.db_path) as conn:
-            query = """
-            SELECT id, precio, categoria, codigo, descripcion, fecha_hora, usuario_telegram, usuario_nombre
-            FROM productos 
-            ORDER BY fecha_hora DESC
-            """
-            df = pd.read_sql_query(query, conn)
+        db_path = get_database_path()
+        
+        # Crear tabla si no existe
+        with sqlite3.connect(db_path) as conn:
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS productos (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    precio REAL NOT NULL,
+                    categoria TEXT NOT NULL,
+                    codigo TEXT,
+                    descripcion TEXT NOT NULL,
+                    fecha_hora TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    usuario_telegram INTEGER NOT NULL,
+                    usuario_nombre TEXT
+                )
+            ''')
+            conn.commit()
+        
+        # Obtener datos
+        query = """
+        SELECT id, precio, categoria, codigo, descripcion, fecha_hora, usuario_telegram, usuario_nombre
+        FROM productos 
+        ORDER BY fecha_hora DESC
+        """
+        df = pd.read_sql_query(query, sqlite3.connect(db_path))
+        
+        if not df.empty:
             df['fecha_hora'] = pd.to_datetime(df['fecha_hora'])
             df['fecha'] = df['fecha_hora'].dt.date
             df['hora'] = df['fecha_hora'].dt.hour
-            return df
+        
+        return df
     except Exception as e:
         st.error(f"Error obteniendo datos: {e}")
         return pd.DataFrame()
@@ -61,6 +90,7 @@ def filtrar_por_fechas(df, dias_atras):
 
 # Título principal
 st.title("🔧 Dashboard Ferretería")
+st.markdown("📊 **Datos en tiempo real desde SQLite**")
 st.markdown("---")
 
 # Obtener datos
@@ -68,6 +98,16 @@ df = obtener_todos_los_datos()
 
 if df.empty:
     st.warning("📭 No hay datos disponibles. Registra algunos productos usando el bot de Telegram.")
+    
+    # Mostrar información sobre cómo usar el bot
+    st.info("""
+    **¿Cómo agregar datos?**
+    
+    1. Ve a tu bot de Telegram
+    2. Envía una foto de una etiqueta de producto
+    3. El bot analizará y guardará la información
+    4. Los datos aparecerán aquí automáticamente
+    """)
     st.stop()
 
 # Sidebar para filtros
@@ -281,6 +321,23 @@ with col2:
     st.write(f"• Categorías activas: {df_filtrado['categoria'].nunique()}")
     st.write(f"• Usuarios registrando: {df_filtrado['usuario_nombre'].nunique()}")
 
+# Información del sistema
+st.markdown("---")
+st.markdown("**🔧 Información del Sistema:**")
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    st.info("📊 **Base de datos**: SQLite")
+
+with col2:
+    db_path = get_database_path()
+    st.info(f"📁 **Archivo**: {db_path}")
+
+with col3:
+    if os.path.exists(db_path):
+        size = os.path.getsize(db_path) / 1024  # KB
+        st.info(f"💾 **Tamaño**: {size:.1f} KB")
+
 # Botón para refrescar datos
 st.markdown("---")
 col1, col2, col3 = st.columns([1, 1, 1])
@@ -293,7 +350,7 @@ with col2:
 st.markdown("---")
 st.markdown(
     "<div style='text-align: center; color: #666;'>"
-    "🔧 Dashboard Ferretería | Datos actualizados automáticamente"
+    "🔧 Dashboard Ferretería | Datos desde SQLite | Actualizados automáticamente"
     "</div>", 
     unsafe_allow_html=True
 )
