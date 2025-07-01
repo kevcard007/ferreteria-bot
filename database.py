@@ -40,20 +40,32 @@ class FerreteriaDB:
     def get_connection(self):
         """Crea y retorna una conexión a PostgreSQL"""
         try:
-            conn = psycopg2.connect(**self.db_params)
-            return conn
+            # Intentar con DATABASE_URL primero
+            database_url = os.getenv('DATABASE_URL')
+            if database_url:
+                conn = psycopg2.connect(database_url)
+                return conn
+            else:
+                # Fallback a parámetros individuales
+                conn = psycopg2.connect(**self.db_params)
+                return conn
         except psycopg2.Error as e:
             print(f"❌ Error conectando a PostgreSQL: {e}")
+            print(f"❌ Parámetros de conexión: {self.db_params}")
+            return None
+        except Exception as e:
+            print(f"❌ Error general de conexión: {e}")
             return None
     
     def init_database(self):
         """Crea las tablas si no existen"""
         try:
-            with self.get_connection() as conn:
-                if conn is None:
-                    print("❌ No se pudo conectar a la base de datos")
-                    return
-                
+            conn = self.get_connection()
+            if conn is None:
+                print("❌ No se pudo conectar a la base de datos")
+                return
+            
+            with conn:
                 with conn.cursor() as cursor:
                     # Crear tabla productos
                     cursor.execute("""
@@ -80,11 +92,14 @@ class FerreteriaDB:
                         ON productos(categoria)
                     """)
                     
-                    conn.commit()
                     print("✅ Base de datos PostgreSQL inicializada correctamente")
+            
+            conn.close()
                     
         except psycopg2.Error as e:
             print(f"❌ Error creando la base de datos: {e}")
+        except Exception as e:
+            print(f"❌ Error general inicializando BD: {e}")
     
     def insertar_producto(self, precio: float, categoria: str, codigo: str, 
                          descripcion: str, usuario_telegram: int, usuario_nombre: str = None) -> bool:
