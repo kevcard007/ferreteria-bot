@@ -8,31 +8,154 @@ from PIL import Image
 import io
 import sqlite3
 
-# FORZAR SQLite únicamente - PostgreSQL deshabilitado temporalmente
-USING_POSTGRES = False
-print("🔧 Usando SQLite únicamente")
+# Configuración de base de datos
+DATABASE_URL = os.getenv('DATABASE_URL')
 
-def init_sqlite():
-    conn = sqlite3.connect('ferreteria.db')
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS productos (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            precio REAL NOT NULL,
-            categoria TEXT NOT NULL,
-            codigo TEXT,
-            descripcion TEXT NOT NULL,
-            fecha_hora TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            usuario_telegram INTEGER NOT NULL,
-            usuario_nombre TEXT
-        )
-    ''')
-    conn.commit()
-    conn.close()
-    print("✅ SQLite inicializado correctamente")
+if DATABASE_URL and 'postgresql' in DATABASE_URL:
+    # Usar PostgreSQL
+    USING_POSTGRES = True
+    print("✅ Configurado para PostgreSQL")
+    import psycopg2
+    from urllib.parse import urlparse
+    
+    def get_db_connection():
+        try:
+            conn = psycopg2.connect(DATABASE_URL)
+            return conn
+        except Exception as e:
+            print(f"❌ Error PostgreSQL: {e}")
+            return None
+    
+    def init_postgres():
+        conn = get_db_connection()
+        if conn:
+            try:
+                with conn.cursor() as cursor:
+                    cursor.execute("""
+                        CREATE TABLE IF NOT EXISTS productos (
+                            id SERIAL PRIMARY KEY,
+                            precio DECIMAL(10,2) NOT NULL,
+                            categoria VARCHAR(100) NOT NULL,
+                            codigo VARCHAR(100),
+                            descripcion TEXT NOT NULL,
+                            fecha_hora TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            usuario_telegram BIGINT NOT NULL,
+                            usuario_nombre VARCHAR(100)
+                        )
+                    """)
+                    conn.commit()
+                    print("✅ PostgreSQL inicializado correctamente")
+                conn.close()
+            except Exception as e:
+                print(f"❌ Error inicializando PostgreSQL: {e}")
+                return False
+        return True
+    
+    def insertar_producto_postgres(precio, categoria, codigo, descripcion, usuario_telegram, usuario_nombre):
+        conn = get_db_connection()
+        if conn:
+            try:
+                with conn.cursor() as cursor:
+                    cursor.execute("""
+                        INSERT INTO productos (precio, categoria, codigo, descripcion, usuario_telegram, usuario_nombre)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                        RETURNING id
+                    """, (precio, categoria, codigo, descripcion, usuario_telegram, usuario_nombre))
+                    producto_id = cursor.fetchone()[0]
+                    conn.commit()
+                    print(f"✅ Producto insertado en PostgreSQL con ID: {producto_id}")
+                conn.close()
+                return True
+            except Exception as e:
+                print(f"❌ Error insertando en PostgreSQL: {e}")
+                conn.close()
+                return False
+        return False
+    
+    def obtener_estadisticas_postgres():
+        conn = get_db_connection()
+        if conn:
+            try:
+                with conn.cursor() as cursor:
+                    # Total del día
+                    cursor.execute("""
+                        SELECT COUNT(*), COALESCE(SUM(precio), 0) 
+                        FROM productos 
+                        WHERE DATE(fecha_hora) = CURRENT_DATE
+                    """)
+                    count, total = cursor.fetchone()
+                    
+                    # Por categorías del día
+                    cursor.execute("""
+                        SELECT categoria, COUNT(*), SUM(precio) 
+                        FROM productos 
+                        WHERE DATE(fecha_hora) = CURRENT_DATE
+                        GROUP BY categoria
+                    """)
+                    categorias = cursor.fetchall()
+                    
+                    # Últimos productos
+                    cursor.execute("""
+                        SELECT descripcion, precio, fecha_hora 
+                        FROM productos 
+                        WHERE DATE(fecha_hora) = CURRENT_DATE
+                        ORDER BY fecha_hora DESC 
+                        LIMIT 3
+                    """)
+                    ultimos = cursor.fetchall()
+                    
+                conn.close()
+                
+                return {
+                    'total_productos': count or 0,
+                    'total_ventas': float(total) if total else 0.0,
+                    'categorias': categorias or [],
+                    'ultimos': ultimos or []
+                }
+            except Exception as e:
+                print(f"❌ Error obteniendo estadísticas PostgreSQL: {e}")
+                conn.close()
+        
+        return {
+            'total_productos': 0,
+            'total_ventas': 0.0,
+            'categorias': [],
+            'ultimos': []
+        }
+    
+    # Inicializar PostgreSQL
+    if not init_postgres():
+        print("⚠️ Fallback a SQLite")
+        USING_POSTGRES = False
 
-# Inicializar SQLite
-init_sqlite()
+else:
+    USING_POSTGRES = False
+    print("⚠️ DATABASE_URL no encontrada o no es PostgreSQL, usando SQLite")
+
+# Si no es PostgreSQL, usar SQLite
+if not USING_POSTGRES:
+
+    def init_sqlite():
+        conn = sqlite3.connect('ferreteria.db')
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS productos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                precio REAL NOT NULL,
+                categoria TEXT NOT NULL,
+                codigo TEXT,
+                descripcion TEXT NOT NULL,
+                fecha_hora TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                usuario_telegram INTEGER NOT NULL,
+                usuario_nombre TEXT
+            )
+        """)
+        conn.commit()
+        conn.close()
+        print("✅ SQLite inicializado correctamente")
+
+    # Inicializar SQLite
+    init_sqlite()
 
 # Funciones SQLite
 def extraer_precio_de_texto(texto):
@@ -235,11 +358,17 @@ Sé muy preciso con los números y textos."""
         # Guardar en base de datos solo si tenemos precio válido
         guardado_exitoso = False
         if precio and precio > 0:
-            guardado_exitoso = insertar_producto_sqlite(
-                precio, categoria, codigo, descripcion, user_id, user_name
-            )
+            if USING_POSTGRES:
+                guardado_exitoso = insertar_producto_postgres(
+                    precio, categoria, codigo, descripcion, user_id, user_name
+                )
+            else:
+                guardado_exitoso = insertar_producto_sqlite(
+                    precio, categoria, codigo, descripcion, user_id, user_name
+                )
         
         # Preparar respuesta para el usuario
+        db_type = "PostgreSQL" if USING_POSTGRES else "SQLite"
         if guardado_exitoso:
             respuesta = f"""✅ **Producto registrado exitosamente**
 
@@ -250,7 +379,7 @@ Sé muy preciso con los números y textos."""
 📝 Descripción: {descripcion}
 👤 Registrado por: {user_name}
 
-💾 **Estado**: Guardado en base de datos (SQLite)"""
+💾 **Estado**: Guardado en base de datos ({db_type})"""
         else:
             respuesta = f"""⚠️ **Análisis completado (no guardado)**
 
@@ -276,17 +405,29 @@ Sé muy preciso con los números y textos."""
 async def estadisticas_hoy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Muestra las estadísticas de ventas del día actual"""
     try:
-        # Usar SQLite
-        stats = obtener_estadisticas_sqlite()
-        total_ventas = stats['total_ventas']
-        total_productos = stats['total_productos']
-        productos_por_categoria = {}
-        for cat, count, total in stats['categorias']:
-            productos_por_categoria[cat] = {"cantidad": count, "total": total}
-        ventas_hoy = stats['ultimos']
+        db_type = "PostgreSQL" if USING_POSTGRES else "SQLite"
+        
+        if USING_POSTGRES:
+            # Usar PostgreSQL
+            stats = obtener_estadisticas_postgres()
+            total_ventas = stats['total_ventas']
+            total_productos = stats['total_productos']
+            productos_por_categoria = {}
+            for cat, count, total in stats['categorias']:
+                productos_por_categoria[cat] = {"cantidad": count, "total": float(total)}
+            ventas_hoy = stats['ultimos']
+        else:
+            # Usar SQLite
+            stats = obtener_estadisticas_sqlite()
+            total_ventas = stats['total_ventas']
+            total_productos = stats['total_productos']
+            productos_por_categoria = {}
+            for cat, count, total in stats['categorias']:
+                productos_por_categoria[cat] = {"cantidad": count, "total": total}
+            ventas_hoy = stats['ultimos']
         
         # Preparar mensaje
-        mensaje = f"""📊 **Estadísticas del día** (SQLite)
+        mensaje = f"""📊 **Estadísticas del día** ({db_type})
 
 💰 **Total vendido hoy**: ${total_ventas:,.2f}
 📦 **Productos registrados**: {total_productos}
@@ -303,7 +444,10 @@ async def estadisticas_hoy(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         if ventas_hoy:
             mensaje += "\n\n🕒 **Últimos registros:**"
             for i, producto in enumerate(ventas_hoy[:3]):  # Solo los primeros 3
-                descripcion, precio, fecha = producto
+                if USING_POSTGRES:
+                    descripcion, precio, fecha = producto
+                else:
+                    descripcion, precio, fecha = producto
                 mensaje += f"\n• {descripcion} - ${precio:,.2f}"
         
         await update.message.reply_text(mensaje)
