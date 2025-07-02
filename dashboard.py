@@ -4,6 +4,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import os
+from database import FerreteriaDB  # Importar tu clase existente
 
 # Configurar la página
 st.set_page_config(
@@ -13,115 +14,120 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Función para conectar a la base de datos
+# Función para inicializar la base de datos
 @st.cache_resource
 def init_database():
-    """Inicializa conexión a la base de datos"""
-    
-    # Usar solo SQLite - más simple y confiable
-    import sqlite3
-    db_path = '/data/ferreteria.db'  # Usar volumen compartido en Railway
-    
+    """
+    Inicializa la conexión usando tu clase FerreteriaDB existente
+    """
     try:
-        conn = sqlite3.connect(db_path)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS productos (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                precio REAL NOT NULL,
-                categoria TEXT NOT NULL,
-                codigo TEXT,
-                descripcion TEXT NOT NULL,
-                fecha_hora TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                usuario_telegram INTEGER NOT NULL,
-                usuario_nombre TEXT
-            )
-        """)
-        conn.commit()
-        conn.close()
-        return 'sqlite', db_path
+        db = FerreteriaDB()
+        # Probar la conexión
+        conn = db.get_connection()
+        if conn:
+            conn.close()
+            return db, 'postgresql', 'conectado'
+        else:
+            return None, 'error', 'no_conectado'
     except Exception as e:
-        # Fallback a SQLite local si no hay volumen
-        db_path = 'ferreteria.db'
-        conn = sqlite3.connect(db_path)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS productos (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                precio REAL NOT NULL,
-                categoria TEXT NOT NULL,
-                codigo TEXT,
-                descripcion TEXT NOT NULL,
-                fecha_hora TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                usuario_telegram INTEGER NOT NULL,
-                usuario_nombre TEXT
-            )
-        """)
-        conn.commit()
-        conn.close()
-        return 'sqlite', db_path
+        st.error(f"Error inicializando base de datos: {e}")
+        return None, 'error', str(e)
 
-# Obtener configuración de BD
-db_type, db_connection = init_database()
+# Inicializar base de datos
+db_instance, db_type, db_status = init_database()
 
-# Mostrar información de debugging
+# Título principal
+st.title("🔧 Dashboard Ferretería")
+st.markdown(f"📊 **Datos en tiempo real desde PostgreSQL**")
+
+# Sidebar con información de debug
 st.sidebar.markdown("### 🔧 Debug Info")
 st.sidebar.info(f"**Tipo BD**: {db_type}")
-if db_type == 'postgresql':
-    st.sidebar.success("✅ PostgreSQL conectado")
-else:
-    st.sidebar.warning("⚠️ Usando SQLite")
 
-# Variables de entorno para debugging
+# Mostrar estado de conexión
+if db_type == 'postgresql' and db_status == 'conectado':
+    st.sidebar.success("✅ PostgreSQL conectado")
+    st.success("✅ Conectado a PostgreSQL de Railway - Datos sincronizados con el bot")
+else:
+    st.sidebar.error(f"❌ Error: {db_status}")
+    st.error(f"❌ Error conectando a PostgreSQL: {db_status}")
+    
+    # Mostrar información de debug para ayudar a diagnosticar
+    st.markdown("### 🔍 Información de Debug")
+    st.write("**Variables de entorno disponibles:**")
+    
+    variables_importantes = [
+        'DATABASE_URL', 'PGHOST', 'PGPORT', 'PGDATABASE', 'PGUSER', 'PGPASSWORD',
+        'DB_POSTGRESDB_HOST', 'DB_POSTGRESDB_PORT', 'DB_POSTGRESDB_DATABASE', 
+        'DB_POSTGRESDB_USER', 'DB_POSTGRESDB_PASSWORD'
+    ]
+    
+    for var in variables_importantes:
+        value = os.getenv(var)
+        if value:
+            # Ocultar contraseñas por seguridad
+            if 'PASSWORD' in var.upper():
+                display_value = '***CONFIGURADA***'
+            else:
+                display_value = value[:20] + "..." if len(value) > 20 else value
+            st.write(f"✅ {var}: {display_value}")
+        else:
+            st.write(f"❌ {var}: No configurada")
+    
+    st.markdown("""
+    ### 📋 Pasos para solucionar:
+    
+    1. **Ve a tu proyecto en Railway**
+    2. **Selecciona el servicio de tu dashboard**
+    3. **Ve a la pestaña "Variables"**
+    4. **Copia las variables de tu servicio PostgreSQL:**
+       - `DATABASE_URL` (la más importante)
+       - O las variables individuales: `PGHOST`, `PGPORT`, etc.
+    5. **Pega estas variables en tu servicio dashboard**
+    6. **Redeploy el dashboard**
+    """)
+    st.stop()
+
+# Variables de entorno para debugging (solo mostrar si está conectado)
 st.sidebar.markdown("**Variables disponibles:**")
-variables = ['DATABASE_URL', 'PGHOST', 'PGPORT', 'PGDATABASE', 'PGUSER']
-for var in variables:
+variables_check = ['DATABASE_URL', 'PGHOST', 'PGPORT', 'PGDATABASE', 'PGUSER']
+for var in variables_check:
     value = os.getenv(var)
     if value:
-        display_value = value[:15] + "..." if len(value) > 15 else value
-        st.sidebar.text(f"{var}: {display_value}")
+        if 'PASSWORD' in var.upper():
+            display_value = '***'
+        else:
+            display_value = value[:15] + "..." if len(value) > 15 else value
+        st.sidebar.text(f"{var}: ✅")
     else:
         st.sidebar.text(f"{var}: ❌")
 
-# Función para obtener datos
+# Función para obtener datos usando tu clase existente
 @st.cache_data(ttl=30)
 def obtener_todos_los_datos():
-    """Obtiene todos los productos de la base de datos"""
+    """
+    Obtiene todos los productos usando tu clase FerreteriaDB
+    """
     try:
-        if db_type == 'postgresql':
-            import psycopg2
-            
-            if isinstance(db_connection, str):
-                # URL completa
-                conn = psycopg2.connect(db_connection)
-            else:
-                # Parámetros individuales
-                conn = psycopg2.connect(**db_connection)
-            
-            query = """
-            SELECT id, precio, categoria, codigo, descripcion, fecha_hora, usuario_telegram, usuario_nombre
-            FROM productos 
-            ORDER BY fecha_hora DESC
-            """
-            df = pd.read_sql_query(query, conn)
-            conn.close()
-            
-        else:
-            # SQLite
-            import sqlite3
-            conn = sqlite3.connect(db_connection)
-            query = """
-            SELECT id, precio, categoria, codigo, descripcion, fecha_hora, usuario_telegram, usuario_nombre
-            FROM productos 
-            ORDER BY fecha_hora DESC
-            """
-            df = pd.read_sql_query(query, conn)
-            conn.close()
+        if db_instance is None:
+            return pd.DataFrame()
         
-        if not df.empty:
-            df['fecha_hora'] = pd.to_datetime(df['fecha_hora'])
-            df['fecha'] = df['fecha_hora'].dt.date
-            df['hora'] = df['fecha_hora'].dt.hour
+        # Usar tu método existente
+        productos = db_instance.obtener_todos_productos()
+        
+        if not productos:
+            return pd.DataFrame()
+        
+        # Convertir a DataFrame
+        df = pd.DataFrame(productos)
+        
+        # Asegurar que fecha_hora sea datetime
+        df['fecha_hora'] = pd.to_datetime(df['fecha_hora'])
+        df['fecha'] = df['fecha_hora'].dt.date
+        df['hora'] = df['fecha_hora'].dt.hour
         
         return df
+        
     except Exception as e:
         st.error(f"❌ Error obteniendo datos: {e}")
         return pd.DataFrame()
@@ -134,19 +140,6 @@ def filtrar_por_fechas(df, dias_atras):
     fecha_limite = datetime.now() - timedelta(days=dias_atras)
     return df[df['fecha_hora'] >= fecha_limite]
 
-# Título principal
-st.title("🔧 Dashboard Ferretería")
-st.markdown(f"📊 **Datos en tiempo real desde {db_type.upper()}**")
-
-# Mostrar estado de conexión
-if db_type == 'postgresql':
-    st.success("✅ Conectado a PostgreSQL de Railway - Datos sincronizados con el bot")
-elif db_type == 'sqlite':
-    st.warning("⚠️ Usando SQLite local - Para sincronizar, verifica las variables de PostgreSQL")
-else:
-    st.error("❌ Error de conexión a base de datos")
-    st.stop()
-
 st.markdown("---")
 
 # Obtener datos
@@ -154,37 +147,21 @@ df = obtener_todos_los_datos()
 
 if df.empty:
     st.warning("📭 No hay datos disponibles.")
+    st.info("""
+    **PostgreSQL conectado pero sin datos:**
     
-    if db_type == 'postgresql':
-        st.info("""
-        **PostgreSQL conectado pero sin datos:**
-        
-        1. Verifica que el bot esté funcionando en Railway
-        2. Envía una foto al bot para crear el primer registro
-        3. Los datos aparecerán aquí automáticamente
-        
-        **Para probar:** Ve a Telegram y envía una foto de una etiqueta al bot.
-        """)
-    else:
-        st.info("""
-        **SQLite sin datos:**
-        
-        Los datos están en PostgreSQL pero el dashboard usa SQLite local.
-        Verifica las  de entorno de PostgreSQL.
-        """)
+    1. ✅ La conexión a PostgreSQL está funcionando
+    2. 🤖 Verifica que el bot esté funcionando en Railway
+    3. 📸 Envía una foto al bot para crear el primer registro
+    4. 🔄 Los datos aparecerán aquí automáticamente
+    
+    **Para probar:** Ve a Telegram y envía una foto de una etiqueta al bot.
+    """)
     st.stop()
 
 # Sidebar para filtros
 st.sidebar.header("📅 Filtros")
-
-# Mostrar información de la BD
-st.sidebar.info(f"🔗 **Base de datos**: {db_type.upper()}")
-if db_type == 'postgresql':
-    st.sidebar.success("✅ Sincronizado con el bot")
-else:
-    st.sidebar.warning("⚠️ No sincronizado")
-
-# Mostrar información de registros
+st.sidebar.success("🔗 Sincronizado con el bot")
 st.sidebar.metric("📊 Total registros", len(df))
 
 # Selector de período
@@ -221,7 +198,7 @@ if df_filtrado.empty:
     st.info("No hay datos para el período seleccionado.")
     st.stop()
 
-# Métricas principales
+# Métricas principales usando tus datos
 col1, col2, col3, col4 = st.columns(4)
 
 with col1:
@@ -306,6 +283,30 @@ with col2:
         fig_bar.update_layout(showlegend=False)
         st.plotly_chart(fig_bar, use_container_width=True)
 
+# Gráfico de línea temporal (nuevo)
+st.subheader("📈 Evolución de Ventas en el Tiempo")
+
+if len(df_filtrado) > 1:
+    # Agrupar por día
+    df_temporal = df_filtrado.groupby(df_filtrado['fecha']).agg({
+        'precio': 'sum',
+        'id': 'count'
+    }).reset_index()
+    df_temporal.columns = ['Fecha', 'Total_Ventas', 'Cantidad_Productos']
+    
+    fig_line = px.line(
+        df_temporal,
+        x='Fecha',
+        y='Total_Ventas',
+        title='Ventas Diarias',
+        markers=True
+    )
+    fig_line.update_layout(
+        xaxis_title="Fecha",
+        yaxis_title="Ventas ($)"
+    )
+    st.plotly_chart(fig_line, use_container_width=True)
+
 # Tabla de productos recientes
 st.subheader("📋 Productos Registrados Recientemente")
 
@@ -328,6 +329,38 @@ st.dataframe(
     hide_index=True
 )
 
+# Estadísticas adicionales
+st.subheader("📊 Estadísticas Detalladas")
+col1, col2 = st.columns(2)
+
+with col1:
+    st.markdown("**📈 Por Categorías:**")
+    for categoria, data in df_filtrado.groupby('categoria').agg({
+        'precio': ['sum', 'count', 'mean']
+    }).iterrows():
+        total = data[('precio', 'sum')]
+        cantidad = data[('precio', 'count')]
+        promedio = data[('precio', 'mean')]
+        
+        st.markdown(f"""
+        **{categoria}:**
+        - Total: ${total:,.2f}
+        - Productos: {cantidad}
+        - Promedio: ${promedio:,.2f}
+        """)
+
+with col2:
+    st.markdown("**⏰ Por Horas del Día:**")
+    ventas_por_hora = df_filtrado.groupby('hora')['precio'].sum().sort_index()
+    
+    fig_hora = px.bar(
+        x=ventas_por_hora.index,
+        y=ventas_por_hora.values,
+        title="Ventas por Hora del Día",
+        labels={'x': 'Hora', 'y': 'Ventas ($)'}
+    )
+    st.plotly_chart(fig_hora, use_container_width=True)
+
 # Botón para refrescar datos
 st.markdown("---")
 col1, col2, col3 = st.columns([1, 1, 1])
@@ -338,10 +371,9 @@ with col2:
 
 # Footer
 st.markdown("---")
-status_text = "sincronizado con el bot" if db_type == 'postgresql' else "datos locales"
 st.markdown(
     f"<div style='text-align: center; color: #666;'>"
-    f"🔧 Dashboard Ferretería | {db_type.upper()} | {status_text}"
+    f"🔧 Dashboard Ferretería | PostgreSQL | Sincronizado con el bot"
     "</div>", 
     unsafe_allow_html=True
 )
