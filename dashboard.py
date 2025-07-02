@@ -18,46 +18,10 @@ st.set_page_config(
 def init_database():
     """Inicializa conexión a la base de datos"""
     
-    # En Railway, las variables están automáticamente disponibles
-    database_url = os.getenv('DATABASE_URL')
-    pghost = os.getenv('PGHOST')
-    
-    # Verificar si tenemos PostgreSQL
-    if database_url or pghost:
-        try:
-            import psycopg2
-            
-            # Intentar con DATABASE_URL primero
-            if database_url:
-                st.info(f"🔍 Intentando conectar con DATABASE_URL: {database_url[:20]}...")
-                conn = psycopg2.connect(database_url)
-                conn.close()
-                return 'postgresql', database_url
-            
-            # Si no, construir URL desde variables individuales
-            elif pghost:
-                connection_params = {
-                    'host': os.getenv('PGHOST'),
-                    'port': os.getenv('PGPORT', '5432'),
-                    'database': os.getenv('PGDATABASE', 'railway'),
-                    'user': os.getenv('PGUSER', 'postgres'),
-                    'password': os.getenv('PGPASSWORD')
-                }
-                st.info(f"🔍 Intentando conectar con PGHOST: {pghost}")
-                conn = psycopg2.connect(**connection_params)
-                conn.close()
-                return 'postgresql', connection_params
-            
-        except ImportError:
-            st.error("❌ psycopg2 no está instalado")
-            return 'error', None
-        except Exception as e:
-            st.error(f"❌ Error conectando a PostgreSQL: {e}")
-            return 'sqlite', 'ferreteria.db'
-    
-    # Fallback a SQLite
+    # Usar solo SQLite - más simple y confiable
     import sqlite3
-    db_path = 'ferreteria.db'
+    db_path = '/data/ferreteria.db'  # Usar volumen compartido en Railway
+    
     try:
         conn = sqlite3.connect(db_path)
         conn.execute("""
@@ -76,8 +40,24 @@ def init_database():
         conn.close()
         return 'sqlite', db_path
     except Exception as e:
-        st.error(f"❌ Error con SQLite: {e}")
-        return 'error', None
+        # Fallback a SQLite local si no hay volumen
+        db_path = 'ferreteria.db'
+        conn = sqlite3.connect(db_path)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS productos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                precio REAL NOT NULL,
+                categoria TEXT NOT NULL,
+                codigo TEXT,
+                descripcion TEXT NOT NULL,
+                fecha_hora TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                usuario_telegram INTEGER NOT NULL,
+                usuario_nombre TEXT
+            )
+        """)
+        conn.commit()
+        conn.close()
+        return 'sqlite', db_path
 
 # Obtener configuración de BD
 db_type, db_connection = init_database()
