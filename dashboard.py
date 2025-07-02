@@ -170,7 +170,7 @@ if df.empty:
         **SQLite sin datos:**
         
         Los datos están en PostgreSQL pero el dashboard usa SQLite local.
-        Verifica las variables de entorno de PostgreSQL.
+        Verifica las  de entorno de PostgreSQL.
         """)
     st.stop()
 
