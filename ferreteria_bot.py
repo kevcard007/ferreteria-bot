@@ -11,6 +11,9 @@ from database import FerreteriaDB  # Usar tu clase existente
 # Cargar variables de entorno desde el archivo .env
 load_dotenv()
 
+# URL del dashboard (cambiar por tu URL real de Railway)
+DASHBOARD_URL = os.getenv('DASHBOARD_URL', 'https://marvelous-enchantment-production-b36d.up.railway.app/')
+
 # Configurar logging para ver qué pasa
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -105,23 +108,24 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     db_status = "PostgreSQL ✅" if USING_POSTGRES else "SQLite (backup) ⚠️"
     
     welcome_message = f"""
-🔧 ¡Bienvenido al Bot de Ferretería! 🔧
+🔧 *¡Bienvenido al Bot de Ferretería!* 🔧
 
 Envíame una foto de la etiqueta de tu producto y yo:
 • Extraeré precio, categoría, código y descripción
 • Guardaré el registro en la base de datos ({db_status})
 • Te daré un resumen del análisis
 
-**Categorías que reconozco:**
+*Categorías que reconozco:*
 🟢 Verde = Agricultura
 🔴 Rojo = Construcción  
 🟡 Amarillo = Pintura
 
 ¡Solo envía la foto y yo me encargo del resto!
 
-🌐 **Dashboard web**: Los datos se sincronizan automáticamente
+📊 *Ver dashboard en tiempo real*: [Click aquí]({DASHBOARD_URL})
+🌐 *Datos sincronizados automáticamente*
     """
-    await update.message.reply_text(welcome_message)
+    await update.message.reply_text(welcome_message, parse_mode='Markdown')
 
 # Función que se ejecuta cuando reciben una foto
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -212,27 +216,31 @@ Sé muy preciso con los números y textos."""
         if guardado_exitoso:
             sync_status = "🌐 Sincronizado con dashboard web" if USING_POSTGRES else "⚠️ No sincronizado con dashboard"
             
-            respuesta = f"""✅ **Producto registrado exitosamente**
+            respuesta = f"""✅ *Producto registrado exitosamente*
 
-📋 **Información extraída:**
+📋 *Información extraída:*
 💰 Precio: ${precio:,.2f}
 📂 Categoría: {categoria}
 🏷️ Código: {codigo}
 📝 Descripción: {descripcion}
 👤 Registrado por: {user_name}
 
-💾 **Estado**: Guardado en {db_usado}
-{sync_status}"""
-        else:
-            respuesta = f"""⚠️ **Análisis completado (no guardado)**
+💾 *Estado*: Guardado en {db_usado}
+{sync_status}
 
-📋 **Información extraída:**
+📊 *Ver en dashboard*: [Click aquí]({DASHBOARD_URL})"""
+        else:
+            respuesta = f"""⚠️ *Análisis completado (no guardado)*
+
+📋 *Información extraída:*
 {resultado_gemini}
 
-❌ **No se pudo guardar**: Precio no detectado o inválido
-💡 **Consejo**: Asegúrate de que el precio sea visible en la etiqueta"""
+❌ *No se pudo guardar*: Precio no detectado o inválido
+💡 *Consejo*: Asegúrate de que el precio sea visible en la etiqueta
+
+📊 *Ver dashboard*: [Click aquí]({DASHBOARD_URL})"""
         
-        await update.message.reply_text(respuesta)
+        await update.message.reply_text(respuesta, parse_mode='Markdown')
         
         # Log para debugging
         logger.info(f"Análisis para usuario {user_id}: precio={precio}, categoria={categoria}, db={db_usado}")
@@ -285,13 +293,13 @@ async def estadisticas_hoy(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             db_status = "SQLite ⚠️ (no sincronizado)"
         
         # Preparar mensaje
-        mensaje = f"""📊 **Estadísticas del día**
+        mensaje = f"""📊 *Estadísticas del día*
 
-💰 **Total vendido hoy**: ${total_ventas:,.2f}
-📦 **Productos registrados**: {total_productos}
-🗄️ **Base de datos**: {db_status}
+💰 *Total vendido hoy*: ${total_ventas:,.2f}
+📦 *Productos registrados*: {total_productos}
+🗄️ *Base de datos*: {db_status}
 
-📂 **Por categoría:**"""
+📂 *Por categoría:*"""
         
         if productos_por_categoria:
             for categoria, datos in productos_por_categoria.items():
@@ -301,13 +309,16 @@ async def estadisticas_hoy(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         
         # Últimos productos registrados (solo para PostgreSQL)
         if USING_POSTGRES and len(ventas_hoy) > 0:
-            mensaje += "\n\n🕒 **Últimos registros:**"
+            mensaje += "\n\n🕒 *Últimos registros:*"
             for i, producto in enumerate(ventas_hoy[:3]):  # Solo los primeros 3
                 descripcion = producto.get('descripcion', 'Sin descripción')
                 precio = producto.get('precio', 0)
                 mensaje += f"\n• {descripcion} - ${precio:,.2f}"
         
-        await update.message.reply_text(mensaje)
+        # Agregar enlace al dashboard
+        mensaje += f"\n\n📊 *Ver dashboard completo*: [Click aquí]({DASHBOARD_URL})"
+        
+        await update.message.reply_text(mensaje, parse_mode='Markdown')
         
     except Exception as e:
         logger.error(f"Error obteniendo estadísticas: {e}")
@@ -321,9 +332,32 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await update.message.reply_text(
         f"📸 Por favor envía una foto de la etiqueta del producto para analizarla.\n\n"
         f"📊 Escribe /estadisticas para ver el resumen del día\n"
-        f"🆘 Escribe /help para más información\n\n"
-        f"🗄️ **Base de datos activa**: {db_status}"
+        f"🆘 Escribe /help para más información\n"
+        f"📊 *Dashboard web*: [Click aquí]({DASHBOARD_URL})\n\n"
+        f"🗄️ *Base de datos activa*: {db_status}",
+        parse_mode='Markdown'
     )
+
+# Comando específico para el dashboard (NUEVO)
+async def dashboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Comando para enviar directamente el enlace del dashboard"""
+    db_status = "sincronizado" if USING_POSTGRES else "no sincronizado"
+    
+    mensaje = f"""📊 *Dashboard de Ferretería*
+
+🌐 *Ver datos en tiempo real*: [Click aquí]({DASHBOARD_URL})
+
+*¿Qué puedes ver en el dashboard?*
+• 💰 Total de ventas del día
+• 📦 Número de productos registrados
+• 📊 Gráficos por categoría
+• 📈 Evolución temporal
+• 📋 Lista detallada de productos
+
+*Estado*: {db_status} con el bot
+*Actualización*: Los datos aparecen automáticamente cuando registras productos"""
+
+    await update.message.reply_text(mensaje, parse_mode='Markdown')
 
 # Función para mostrar ayuda
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -332,36 +366,40 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     sync_status = "🌐 Datos sincronizados con dashboard web" if USING_POSTGRES else "⚠️ Datos NO sincronizados con dashboard"
     
     help_text = f"""
-🆘 **Ayuda - Bot de Ferretería**
+🆘 *Ayuda - Bot de Ferretería*
 
-**📸 ¿Cómo registrar productos?**
+*📸 ¿Cómo registrar productos?*
 1. Envía una foto clara de la etiqueta
 2. El bot analizará automáticamente la información
 3. Si detecta un precio válido, se guardará en la base de datos
 
-**📊 Estado actual:**
+*📊 Estado actual:*
 🗄️ Base de datos: {db_status}
 {sync_status}
 
-**📊 Comandos disponibles:**
+*📊 Comandos disponibles:*
 /start - Mensaje de bienvenida
 /estadisticas - Ver resumen de ventas del día
+/dashboard - Enlace directo al dashboard web
 /help - Esta ayuda
 
-**🎯 Consejos para mejores resultados:**
+*🌐 Dashboard web:*
+[Ver dashboard en tiempo real]({DASHBOARD_URL})
+
+*🎯 Consejos para mejores resultados:*
 • Foto con buena iluminación
 • Etiqueta completamente visible
 • Sin reflejos o sombras
 • Texto del precio legible
 
-**🏷️ Categorías automáticas:**
+*🏷️ Categorías automáticas:*
 🟢 Etiquetas verdes = Agricultura
 🔴 Etiquetas rojas = Construcción
 🟡 Etiquetas amarillas = Pintura
 
 ¿Problemas? Intenta con otra foto más clara.
     """
-    await update.message.reply_text(help_text)
+    await update.message.reply_text(help_text, parse_mode='Markdown')
 
 def main() -> None:
     """Función principal que ejecuta el bot"""
@@ -376,6 +414,9 @@ def main() -> None:
     if not google_api_key:
         print("❌ Error: GOOGLE_API_KEY no encontrado en el archivo .env")
         return
+    
+    # Mostrar información de configuración
+    print(f"🌐 Dashboard URL configurada: {DASHBOARD_URL}")
     
     # Mostrar estado de la base de datos
     db_info = "PostgreSQL (sincronizado con dashboard)" if USING_POSTGRES else "SQLite (backup, no sincronizado)"
@@ -392,11 +433,13 @@ def main() -> None:
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("estadisticas", estadisticas_hoy))
+    application.add_handler(CommandHandler("dashboard", dashboard_command))  # COMANDO AGREGADO
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     
     # Iniciar el bot
     print("🤖 Bot iniciando con Google Gemini y Base de Datos...")
+    print("📊 Enlaces al dashboard incluidos en todas las respuestas")
     print("✅ Bot activo. Presiona Ctrl+C para detener.")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
